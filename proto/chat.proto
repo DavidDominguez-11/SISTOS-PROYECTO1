@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package chat;
+
+// ─────────────────────────────────────────────
+//  Status Enum
+// ─────────────────────────────────────────────
+enum StatusEnum {
+    ACTIVE          = 0;
+    DO_NOT_DISTURB  = 1;
+    INVISIBLE       = 2;
+}
+
+// ─────────────────────────────────────────────
+//  Client → Server  (types 1-7)
+// ─────────────────────────────────────────────
+
+message Register {
+    string username = 1;
+    string ip       = 2;
+}
+
+message MessageGeneral {
+    string     message         = 1;
+    StatusEnum status          = 2;
+    string     username_origin = 3;
+    string     ip              = 4;
+}
+
+message MessageDM {
+    string     message      = 1;
+    StatusEnum status       = 2;
+    string     username_des = 3;
+    string     ip           = 4;
+}
+
+message ChangeStatus {
+    StatusEnum status   = 1;
+    string     username = 2;
+    string     ip       = 3;
+}
+
+message ListUsers {
+    string username = 1;
+    string ip       = 2;
+}
+
+message GetUserInfo {
+    string username_des = 1;
+    string username     = 2;
+    string ip           = 3;
+}
+
+message Quit {
+    bool   quit = 1;
+    string ip   = 2;
+}
+
+// ─────────────────────────────────────────────
+//  Server → Client  (types 10-14)
+// ─────────────────────────────────────────────
+
+message ServerResponse {
+    int32  status_code   = 1;
+    string message       = 2;
+    bool   is_successful = 3;
+}
+
+message AllUsers {
+    repeated string     usernames = 1;
+    repeated StatusEnum status    = 2;
+}
+
+message ForDm {
+    string username_des = 1;
+    string message      = 2;
+}
+
+message BroadcastDelivery {
+    string message         = 1;
+    string username_origin = 2;
+}
+
+message GetUserInfoResponse {
+    string     ip_address = 1;
+    string     username   = 2;
+    StatusEnum status     = 3;
+}
