@@ -170,21 +170,8 @@ static void inputLoop()
         std::string cmd;
         iss >> cmd;
 
-        // ── /register <username> ─────────────────────────────────────────────
-        if (cmd == "/register") {
-            std::string uname;
-            if (!(iss >> uname)) { usage("/register <username>"); continue; }
-
-            gUsername = uname;
-            Register req;
-            req.set_username(uname);
-            req.set_ip(gIp);
-            if (!sendFramed(gSock, TYPE_REGISTER, req)) {
-                std::cerr << "[Client] Send error on /register\n";
-            }
-
         // ── /all <message> ───────────────────────────────────────────────────
-        } else if (cmd == "/all") {
+        if (cmd == "/all") {
             std::string msg;
             std::getline(iss, msg);
             // trim leading space
@@ -277,7 +264,6 @@ static void inputLoop()
         // ── unknown ──────────────────────────────────────────────────────────
         } else {
             std::cout << "[Client] Unknown command.  Available commands:\n"
-                      << "  /register <username>\n"
                       << "  /all <message>\n"
                       << "  /dm <username> <message>\n"
                       << "  /list\n"
@@ -294,14 +280,17 @@ int main(int argc, char* argv[])
 {
     GOOGLE_PROTOBUF_VERIFY_VERSION;
 
-    std::string host = "127.0.0.1";
+    if (argc < 4) {
+        std::cerr << "Usage: " << argv[0] << " <username> <host> <port>\n";
+        return 1;
+    }
+
+    gUsername = argv[1];
+    std::string host = argv[2];
     int         port = 8080;
 
-    if (argc > 1) host = argv[1];
-    if (argc > 2) {
-        try { port = std::stoi(argv[2]); }
-        catch (...) { std::cerr << "Invalid port\n"; return 1; }
-    }
+    try { port = std::stoi(argv[3]); }
+    catch (...) { std::cerr << "Invalid port\n"; return 1; }
 
     // ── Connect ───────────────────────────────────────────────────────────────
     gSock = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -323,13 +312,23 @@ int main(int argc, char* argv[])
 
     gIp = getLocalIp();
 
+    // ── Automatic Registration ────────────────────────────────────────────────
+    Register regReq;
+    regReq.set_username(gUsername);
+    regReq.set_ip(gIp);
+    if (!sendFramed(gSock, TYPE_REGISTER, regReq)) {
+        std::cerr << "[Client] Failed to send automatic registration\n";
+        ::close(gSock);
+        return 1;
+    }
+
     std::cout << "╔══════════════════════════════════════════╗\n"
               << "║        C++ Protobuf Chat Client          ║\n"
               << "╚══════════════════════════════════════════╝\n"
               << "  Connected to " << host << ":" << port << "\n"
+              << "  Username     : " << gUsername << "\n"
               << "  Your IP      : " << gIp << "\n\n"
               << "  Commands:\n"
-              << "    /register <username>\n"
               << "    /all <message>\n"
               << "    /dm <username> <message>\n"
               << "    /list\n"
