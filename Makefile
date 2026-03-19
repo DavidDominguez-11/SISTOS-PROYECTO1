@@ -4,7 +4,20 @@
 
 CXX      := g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -I.
-LDFLAGS  := -lprotobuf -pthread
+PROTO_CFLAGS := $(shell pkg-config --cflags protobuf 2>NUL)
+PROTO_LIBS   := $(shell pkg-config --libs protobuf 2>NUL)
+
+ifeq ($(OS),Windows_NT)
+EXE      := .exe
+LDFLAGS  := -lprotobuf -lws2_32 $(PROTO_LIBS)
+RM_FILES := del /Q
+else
+EXE      :=
+LDFLAGS  := -lprotobuf -pthread $(PROTO_LIBS)
+RM_FILES := rm -f
+endif
+
+CXXFLAGS += $(PROTO_CFLAGS)
 
 PROTO_DIR    := proto
 PROTO_FILE   := $(PROTO_DIR)/chat.proto
@@ -27,13 +40,12 @@ $(PROTO_CC) $(PROTO_H): $(PROTO_FILE)
 
 # ── Build server ───────────────────────────────────────────────────────────────
 server: $(SERVER_SRC) framing.h
-	$(CXX) $(CXXFLAGS) -o server $(SERVER_SRC) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o server$(EXE) $(SERVER_SRC) $(LDFLAGS)
 
 # ── Build client ───────────────────────────────────────────────────────────────
 client: $(CLIENT_SRC) framing.h
-	$(CXX) $(CXXFLAGS) -o client $(CLIENT_SRC) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o client$(EXE) $(CLIENT_SRC) $(LDFLAGS)
 
 # ── Clean up ──────────────────────────────────────────────────────────────────
 clean:
-	rm -f server client \
-	      $(PROTO_CC) $(PROTO_H)
+	$(RM_FILES) server$(EXE) client$(EXE) $(PROTO_CC) $(PROTO_H)

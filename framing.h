@@ -11,9 +11,27 @@
 
 #include <cstring>
 #include <string>
+#include <cstdint>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <BaseTsd.h>
+using ssize_t = SSIZE_T;
+using socklen_t = int;
+using socket_t = SOCKET;
+constexpr socket_t INVALID_SOCKET_FD = INVALID_SOCKET;
+inline int closeSocket(socket_t s) { return ::closesocket(s); }
+constexpr int SEND_FLAGS = 0;
+#else
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
+using socket_t = int;
+constexpr socket_t INVALID_SOCKET_FD = -1;
+inline int closeSocket(socket_t s) { return ::close(s); }
+constexpr int SEND_FLAGS = MSG_NOSIGNAL;
+#endif
 #include <google/protobuf/message_lite.h>
 
 // ── Message-type constants ────────────────────────────────────────────────────
@@ -36,7 +54,7 @@ constexpr uint8_t TYPE_GET_USER_INFO_RESPONSE = 14;
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Read exactly `n` bytes from `fd` into `buf`.  Returns false on EOF/error.
-inline bool recvExact(int fd, char* buf, std::size_t n)
+inline bool recvExact(socket_t fd, char* buf, std::size_t n)
 {
     std::size_t received = 0;
     while (received < n) {
@@ -48,7 +66,7 @@ inline bool recvExact(int fd, char* buf, std::size_t n)
 }
 
 /// Serialize `msg` and send it as a framed packet.  Returns false on error.
-inline bool sendFramed(int fd, uint8_t type,
+inline bool sendFramed(socket_t fd, uint8_t type,
                        const google::protobuf::MessageLite& msg)
 {
     // 1. Serialize
@@ -70,7 +88,7 @@ inline bool sendFramed(int fd, uint8_t type,
     const std::size_t total = frame.size();
     std::size_t sent = 0;
     while (sent < total) {
-        ssize_t n = send(fd, frame.data() + sent, total - sent, MSG_NOSIGNAL);
+        ssize_t n = send(fd, frame.data() + sent, total - sent, SEND_FLAGS);
         if (n <= 0) return false;
         sent += static_cast<std::size_t>(n);
     }
@@ -79,7 +97,7 @@ inline bool sendFramed(int fd, uint8_t type,
 
 /// Read one complete framed message.
 /// On success sets `type`, fills `payload`, returns true.
-inline bool recvFramed(int fd, uint8_t& type, std::string& payload)
+inline bool recvFramed(socket_t fd, uint8_t& type, std::string& payload)
 {
     // 1. Read 5-byte header
     char header[5];

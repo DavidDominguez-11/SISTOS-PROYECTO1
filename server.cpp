@@ -8,10 +8,15 @@
 //  Shared state protected by clients_mutex.
 // ─────────────────────────────────────────────────────────────────────────────
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <atomic>
 #include <cstring>
@@ -28,7 +33,7 @@ using namespace chat;
 
 // ── Shared data structure (spec §4.2) ─────────────────────────────────────────
 struct ClientInfo {
-    int        socket;
+    socket_t    socket;
     std::string username;
     std::string ip;
     StatusEnum  status;
@@ -43,7 +48,7 @@ static void removeClient(const std::string& username)
     std::lock_guard<std::mutex> lock(clients_mutex);
     auto it = clients.find(username);
     if (it != clients.end()) {
-        ::close(it->second.socket);
+        closeSocket(it->second.socket);
         clients.erase(it);
         std::cout << "[Server] Removed client: " << username << "\n";
     }
@@ -62,7 +67,7 @@ static void broadcastAll(uint8_t type, const google::protobuf::MessageLite& msg)
 }
 
 // ── Per-client handler (runs in its own thread) ───────────────────────────────
-static void handleClient(int clientSock, std::string clientIp)
+static void handleClient(socket_t clientSock, std::string clientIp)
 {
     std::cout << "[Server] Connection from " << clientIp
               << " (fd=" << clientSock << ")\n";
@@ -73,7 +78,7 @@ static void handleClient(int clientSock, std::string clientIp)
         if (!registeredUsername.empty()) {
             removeClient(registeredUsername);
         } else {
-            ::close(clientSock);
+            closeSocket(clientSock);
         }
     };
 
@@ -269,6 +274,14 @@ int main(int argc, char* argv[])
     // Verify that the Protobuf library version matches the headers.
     GOOGLE_PROTOBUF_VERIFY_VERSION;
 
+#ifdef _WIN32
+    WSADATA wsaData{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "WSAStartup failed\n";
+        return 1;
+    }
+#endif
+
     int port = 8080;
     if (argc > 1) {
         try { port = std::stoi(argv[1]); }
@@ -276,14 +289,15 @@ int main(int argc, char* argv[])
     }
 
     // ── Create listening socket ───────────────────────────────────────────────
-    int serverSock = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (serverSock < 0) {
+    socket_t serverSock = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (serverSock == INVALID_SOCKET_FD) {
         std::perror("socket");
         return 1;
     }
 
     int opt = 1;
-    ::setsockopt(serverSock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    ::setsockopt(serverSock, SOL_SOCKET, SO_REUSEADDR,
+                 reinterpret_cast<const char*>(&opt), sizeof(opt));
 
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
@@ -306,10 +320,10 @@ int main(int argc, char* argv[])
         sockaddr_in clientAddr{};
         socklen_t   clientLen = sizeof(clientAddr);
 
-        int clientSock = ::accept(serverSock,
-                                  reinterpret_cast<sockaddr*>(&clientAddr),
-                                  &clientLen);
-        if (clientSock < 0) {
+        socket_t clientSock = ::accept(serverSock,
+                                       reinterpret_cast<sockaddr*>(&clientAddr),
+                                       &clientLen);
+        if (clientSock == INVALID_SOCKET_FD) {
             std::perror("[Server] accept");
             continue;
         }
@@ -320,7 +334,10 @@ int main(int argc, char* argv[])
         std::thread(handleClient, clientSock, std::move(clientIp)).detach();
     }
 
-    ::close(serverSock);
+    closeSocket(serverSock);
+#ifdef _WIN32
+    WSACleanup();
+#endif
     google::protobuf::ShutdownProtobufLibrary();
     return 0;
 }

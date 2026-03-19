@@ -6,10 +6,15 @@
 //    • recvThread   – reads framed messages, prints formatted output
 // ─────────────────────────────────────────────────────────────────────────────
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <atomic>
 #include <cstring>
@@ -24,7 +29,7 @@
 using namespace chat;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
-static int               gSock    = -1;
+static socket_t          gSock    = INVALID_SOCKET_FD;
 static std::string       gUsername;
 static std::string       gIp;
 static std::atomic<bool> gRunning {true};
@@ -32,8 +37,8 @@ static std::atomic<bool> gRunning {true};
 // ── Helper: obtain this machine's outward-facing IP ──────────────────────────
 static std::string getLocalIp()
 {
-    int s = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (s < 0) return "127.0.0.1";
+    socket_t s = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (s == INVALID_SOCKET_FD) return "127.0.0.1";
 
     sockaddr_in remote{};
     remote.sin_family = AF_INET;
@@ -41,14 +46,14 @@ static std::string getLocalIp()
     ::inet_pton(AF_INET, "8.8.8.8", &remote.sin_addr);
 
     if (::connect(s, reinterpret_cast<sockaddr*>(&remote), sizeof(remote)) < 0) {
-        ::close(s);
+        closeSocket(s);
         return "127.0.0.1";
     }
 
     sockaddr_in local{};
     socklen_t   len = sizeof(local);
     ::getsockname(s, reinterpret_cast<sockaddr*>(&local), &len);
-    ::close(s);
+    closeSocket(s);
     return ::inet_ntoa(local.sin_addr);
 }
 
@@ -294,6 +299,14 @@ int main(int argc, char* argv[])
 {
     GOOGLE_PROTOBUF_VERIFY_VERSION;
 
+#ifdef _WIN32
+    WSADATA wsaData{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "WSAStartup failed\n";
+        return 1;
+    }
+#endif
+
     std::string host = "127.0.0.1";
     int         port = 8080;
 
@@ -305,7 +318,7 @@ int main(int argc, char* argv[])
 
     // ── Connect ───────────────────────────────────────────────────────────────
     gSock = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (gSock < 0) { std::perror("socket"); return 1; }
+    if (gSock == INVALID_SOCKET_FD) { std::perror("socket"); return 1; }
 
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
@@ -346,12 +359,19 @@ int main(int argc, char* argv[])
     // ── Shutdown ──────────────────────────────────────────────────────────────
     gRunning = false;
     // Unblock the recv thread if it is waiting on recv()
+#ifdef _WIN32
+    ::shutdown(gSock, SD_BOTH);
+#else
     ::shutdown(gSock, SHUT_RDWR);
-    ::close(gSock);
+#endif
+    closeSocket(gSock);
 
     if (recvThread.joinable()) recvThread.join();
 
     std::cout << "[Client] Goodbye.\n";
     google::protobuf::ShutdownProtobufLibrary();
+#ifdef _WIN32
+    WSACleanup();
+#endif
     return 0;
 }
