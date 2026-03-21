@@ -39,3 +39,12 @@
 
 # debug information files
 *.dwo
+# VS Code
+.vscode/
+
+# Windows special files
+NUL
+
+# Proto generated files (optional - comment if you want to track them)
+# proto/chat.pb.cc
+# proto/chat.pb.h
