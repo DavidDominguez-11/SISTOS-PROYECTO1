@@ -331,7 +331,7 @@ int main(int argc, char* argv[])
     regReq.set_ip(gIp);
     if (!sendFramed(gSock, TYPE_REGISTER, regReq)) {
         std::cerr << "[Client] Failed to send automatic registration\n";
-        ::close(gSock);
+        closeSocket(gSock);
         return 1;
     }
 
