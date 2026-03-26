@@ -17,8 +17,10 @@
 #endif
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -30,9 +32,16 @@ using namespace chat;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 static socket_t          gSock    = INVALID_SOCKET_FD;
+static std::mutex        gSockMutex; // Protects socket for multi-threaded sends
+
 static std::string       gUsername;
 static std::string       gIp;
 static std::atomic<bool> gRunning {true};
+
+// Status and activity tracking
+static std::mutex                             gStatusMutex;
+static StatusEnum                             gCurrentStatus = StatusEnum::ACTIVE;
+static std::chrono::steady_clock::time_point  gLastActivityTime;
 
 // ── Helper: obtain this machine's outward-facing IP ──────────────────────────
 static std::string getLocalIp()
@@ -65,6 +74,42 @@ static std::string statusStr(StatusEnum s)
     case StatusEnum::DO_NOT_DISTURB: return "DO_NOT_DISTURB";
     case StatusEnum::INVISIBLE:      return "INVISIBLE";
     default:                         return "UNKNOWN";
+    }
+}
+
+// ── Helper: send framed message (thread-safe) ─────────────────────────────────
+static bool sendFramedSafe(uint8_t type, const google::protobuf::MessageLite& msg)
+{
+    std::lock_guard<std::mutex> lock(gSockMutex);
+    return sendFramed(gSock, type, msg);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Inactivity Watchdog
+// ─────────────────────────────────────────────────────────────────────────────
+static void watchdogLoop()
+{
+    while (gRunning) {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        
+        auto now = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> lock(gStatusMutex);
+        
+        if (gCurrentStatus == StatusEnum::ACTIVE) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - gLastActivityTime).count();
+            if (elapsed >= 60) {
+                gCurrentStatus = StatusEnum::INVISIBLE;
+                
+                ChangeStatus req;
+                req.set_status(gCurrentStatus);
+                req.set_username(gUsername);
+                req.set_ip(gIp);
+                
+                if (sendFramedSafe(TYPE_CHANGE_STATUS, req)) {
+                    std::cout << "\n[Client] Marked as INVISIBLE due to 60s of inactivity.\n> " << std::flush;
+                }
+            }
+        }
     }
 }
 
@@ -166,9 +211,18 @@ static void inputLoop()
     auto usage = [](const char* msg) { std::cout << "[Usage] " << msg << "\n"; };
 
     std::string line;
-    while (gRunning && std::getline(std::cin, line)) {
+    while (gRunning) {
+        std::cout << "> " << std::flush;
+        if (!std::getline(std::cin, line)) break;
 
         if (!gRunning) break;
+        
+        // Update activity
+        {
+            std::lock_guard<std::mutex> lock(gStatusMutex);
+            gLastActivityTime = std::chrono::steady_clock::now();
+        }
+
         if (line.empty()) continue;
 
         std::istringstream iss(line);
@@ -188,7 +242,7 @@ static void inputLoop()
             req.set_status(StatusEnum::ACTIVE);
             req.set_username_origin(gUsername);
             req.set_ip(gIp);
-            if (!sendFramed(gSock, TYPE_MESSAGE_GENERAL, req)) {
+            if (!sendFramedSafe(TYPE_MESSAGE_GENERAL, req)) {
                 std::cerr << "[Client] Send error on /all\n";
             }
 
@@ -206,7 +260,7 @@ static void inputLoop()
             req.set_status(StatusEnum::ACTIVE);
             req.set_username_des(target);
             req.set_ip(gIp);
-            if (!sendFramed(gSock, TYPE_MESSAGE_DM, req)) {
+            if (!sendFramedSafe(TYPE_MESSAGE_DM, req)) {
                 std::cerr << "[Client] Send error on /dm\n";
             }
 
@@ -215,7 +269,7 @@ static void inputLoop()
             ListUsers req;
             req.set_username(gUsername);
             req.set_ip(gIp);
-            if (!sendFramed(gSock, TYPE_LIST_USERS, req)) {
+            if (!sendFramedSafe(TYPE_LIST_USERS, req)) {
                 std::cerr << "[Client] Send error on /list\n";
             }
 
@@ -228,7 +282,7 @@ static void inputLoop()
             req.set_username_des(target);
             req.set_username(gUsername);
             req.set_ip(gIp);
-            if (!sendFramed(gSock, TYPE_GET_USER_INFO, req)) {
+            if (!sendFramedSafe(TYPE_GET_USER_INFO, req)) {
                 std::cerr << "[Client] Send error on /info\n";
             }
 
@@ -249,11 +303,16 @@ static void inputLoop()
                 continue;
             }
 
+            {
+                std::lock_guard<std::mutex> lock(gStatusMutex);
+                gCurrentStatus = st;
+            }
+
             ChangeStatus req;
             req.set_status(st);
             req.set_username(gUsername);
             req.set_ip(gIp);
-            if (!sendFramed(gSock, TYPE_CHANGE_STATUS, req)) {
+            if (!sendFramedSafe(TYPE_CHANGE_STATUS, req)) {
                 std::cerr << "[Client] Send error on /status\n";
             }
 
@@ -262,7 +321,7 @@ static void inputLoop()
             Quit req;
             req.set_quit(true);
             req.set_ip(gIp);
-            sendFramed(gSock, TYPE_QUIT, req);   // best-effort
+            sendFramedSafe(TYPE_QUIT, req);   // best-effort
             gRunning = false;
             break;
 
@@ -325,11 +384,14 @@ int main(int argc, char* argv[])
 
     gIp = getLocalIp();
 
+    // Initialize activity
+    gLastActivityTime = std::chrono::steady_clock::now();
+
     // ── Automatic Registration ────────────────────────────────────────────────
     Register regReq;
     regReq.set_username(gUsername);
     regReq.set_ip(gIp);
-    if (!sendFramed(gSock, TYPE_REGISTER, regReq)) {
+    if (!sendFramedSafe(TYPE_REGISTER, regReq)) {
         std::cerr << "[Client] Failed to send automatic registration\n";
         closeSocket(gSock);
         return 1;
@@ -349,8 +411,9 @@ int main(int argc, char* argv[])
               << "    /status <ACTIVE|DO_NOT_DISTURB|INVISIBLE>\n"
               << "    /quit\n\n";
 
-    // ── Start receive thread ──────────────────────────────────────────────────
+    // ── Start threads ─────────────────────────────────────────────────────────
     std::thread recvThread(receiveLoop);
+    std::thread watchdogThread(watchdogLoop);
 
     // ── Input loop runs on main thread ────────────────────────────────────────
     inputLoop();
@@ -366,6 +429,7 @@ int main(int argc, char* argv[])
     closeSocket(gSock);
 
     if (recvThread.joinable()) recvThread.join();
+    if (watchdogThread.joinable()) watchdogThread.join();
 
     std::cout << "[Client] Goodbye.\n";
     google::protobuf::ShutdownProtobufLibrary();
